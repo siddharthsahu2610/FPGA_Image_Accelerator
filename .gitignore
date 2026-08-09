@@ -1,0 +1,10 @@
+# Verilator generated files
+obj_dir/
+*.vcd
+
+# GTKWave generated files
+*.fst
+
+# VS Code generated database files
+.vscode/browse.vc.db*
+
