@@ -1,0 +1,22 @@
+# ============================================================
+# FPGA Image Accelerator
+# MAC Engine - Yosys Synthesis Baseline
+# ============================================================
+
+read_verilog rtl/mac_engine.v
+
+hierarchy -top mac_engine
+
+proc
+opt
+
+memory
+opt
+
+techmap
+opt
+
+stat
+
+write_verilog reports/mac_synthesized.v
+
