@@ -58,4 +58,3 @@ module line_buffer #(
     assign row2_out = pixel_in;
 
 endmodule
-

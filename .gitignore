@@ -1,12 +1,14 @@
-# Verilator generated files
+# Simulation / build artifacts
 obj_dir/
+sim_sobel
 *.vcd
-
-# GTKWave generated files
 *.fst
+*.log
 
-# VS Code generated database files
-.vscode/browse.vc.db*
+# Verilator / generated C++
+tb_main.cpp
 
-#Yosys synthesis artifacts
+# Temporary generated vectors
+golden_output.hex
+input_pixels.hex
 reports/
