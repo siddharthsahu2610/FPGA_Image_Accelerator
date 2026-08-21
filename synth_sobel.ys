@@ -1,0 +1,35 @@
+# ============================================================
+# FPGA Image Accelerator - Sobel-X Synthesis Baseline
+# Target: Generic FPGA characterization
+# ============================================================
+
+read_verilog -sv rtl/window_generator.v
+read_verilog -sv rtl/mac_engine.v
+read_verilog -sv rtl/saturation.v
+read_verilog -sv rtl/sobel_accelerator_top.v
+
+# Elaborate the complete accelerator
+hierarchy -top sobel_accelerator_top
+
+# RTL synthesis
+proc
+opt
+fsm
+opt
+memory
+opt
+
+# Technology-independent synthesis
+techmap
+opt
+
+# Flatten hierarchy for complete design statistics
+flatten
+opt
+
+# Generate synthesized RTL netlist
+write_verilog -noattr reports/sobel_synthesized.v
+
+# Final statistics
+stat
+

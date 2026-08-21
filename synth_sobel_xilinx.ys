@@ -1,0 +1,25 @@
+# ============================================================
+# FPGA Image Accelerator
+# Xilinx 7-Series / Basys 3 Resource Mapping
+# Target family: Artix-7 XC7A35T
+# ============================================================
+
+read_verilog -sv rtl/window_generator.v
+read_verilog -sv rtl/mac_engine.v
+read_verilog -sv rtl/saturation.v
+read_verilog -sv rtl/sobel_accelerator_top.v
+
+hierarchy -top sobel_accelerator_top
+
+# Xilinx 7-series synthesis
+synth_xilinx \
+    -top sobel_accelerator_top \
+    -family xc7 \
+    -flatten
+
+# Save technology-mapped netlist
+write_verilog -noattr reports/sobel_xilinx_mapped.v
+
+# Final resource statistics
+stat
+
