@@ -1,132 +1,375 @@
 `timescale 1ns/1ps
 
-module sobel_accelerator_top_tb (
-    input wire clk,
-    input wire rst_n
-);
+module sobel_accelerator_top_tb;
 
-    parameter DATA_WIDTH       = 8;
-    parameter IMG_WIDTH        = 288;
-    parameter IMG_HEIGHT       = 2;
-    parameter TOTAL_PIXELS     = IMG_WIDTH * IMG_HEIGHT;
+    // =========================================================
+    // Parameters
+    // =========================================================
 
-    reg                  s_axis_tvalid;
-    wire                 s_axis_tready;
-    reg [DATA_WIDTH-1:0] s_axis_tdata;
+    localparam integer DATA_WIDTH = 8;
+    localparam integer IMG_WIDTH  = 128;
+    localparam integer IMG_HEIGHT = 128;
 
-    wire                 m_axis_tvalid;
-    reg                  m_axis_tready;
-    wire [DATA_WIDTH-1:0] m_axis_tdata;
+    localparam integer TOTAL_IN  = IMG_WIDTH * IMG_HEIGHT;
+    localparam integer TOTAL_OUT = (IMG_WIDTH - 2) * (IMG_HEIGHT - 2);
 
-    wire [15:0] col_cnt;
-    wire [15:0] row_cnt;
-    wire        frame_done;
+    // =========================================================
+    // DUT Interface
+    // =========================================================
 
-    // Memory arrays for file I/O
-    reg [DATA_WIDTH-1:0] input_mem  [0:TOTAL_PIXELS-1];
-    reg [DATA_WIDTH-1:0] golden_mem [0:TOTAL_PIXELS-1];
+    reg clk;
+    reg rst;
 
-    integer errors = 0;
-    integer accepted_inputs = 0;
-    integer accepted_outputs = 0;
-    integer idx = 0;
+    reg                  s_axis_valid;
+    reg  [DATA_WIDTH-1:0] s_axis_data;
+
+    wire                 m_axis_valid;
+    wire [DATA_WIDTH-1:0] m_axis_data;
+
+    // =========================================================
+    // Input / Golden Memory
+    // =========================================================
+
+    reg [DATA_WIDTH-1:0] input_mem  [0:TOTAL_IN-1];
+    reg [DATA_WIDTH-1:0] golden_mem [0:TOTAL_OUT-1];
+
+    // =========================================================
+    // Verification Counters
+    // =========================================================
+
+    integer i;
+    integer r;
+    integer c;
+
+    integer input_count;
+    integer output_count;
+    integer match_count;
+    integer mismatch_count;
+
+    // =========================================================
+    // DUT
+    // =========================================================
 
     sobel_accelerator_top #(
-        .DATA_WIDTH(DATA_WIDTH),
-        .IMG_WIDTH(IMG_WIDTH),
-        .IMG_HEIGHT(IMG_HEIGHT)
+        .DATA_WIDTH (DATA_WIDTH),
+        .IMG_WIDTH  (IMG_WIDTH),
+        .IMG_HEIGHT (IMG_HEIGHT)
     ) dut (
-        .clk(clk),
-        .rst_n(rst_n),
-        .s_axis_tvalid(s_axis_tvalid),
-        .s_axis_tready(s_axis_tready),
-        .s_axis_tdata(s_axis_tdata),
-        .m_axis_tvalid(m_axis_tvalid),
-        .m_axis_tready(m_axis_tready),
-        .m_axis_tdata(m_axis_tdata),
-        .col_cnt(col_cnt),
-        .row_cnt(row_cnt),
-        .frame_done(frame_done)
+        .clk          (clk),
+        .rst          (rst),
+
+        .s_axis_valid (s_axis_valid),
+        .s_axis_data  (s_axis_data),
+
+        .m_axis_valid (m_axis_valid),
+        .m_axis_data  (m_axis_data)
     );
 
-    // Test Driver Sequence
+    // =========================================================
+    // Clock
+    // 100 MHz
+    // =========================================================
+
+    always #5 clk = ~clk;
+
+    // =========================================================
+    // Golden Sobel-X Model
+    //
+    // Kernel:
+    //
+    //       -1   0  +1
+    //       -2   0  +2
+    //       -1   0  +1
+    //
+    // Explicit 32-bit signed arithmetic is used so that
+
+    function [7:0] sobel_x;
+
+        input integer r;
+        input integer c;
+
+        reg [7:0] p00;
+        reg [7:0] p01;
+        reg [7:0] p02;
+
+        reg [7:0] p10;
+        reg [7:0] p12;
+
+        reg [7:0] p20;
+        reg [7:0] p21;
+        reg [7:0] p22;
+
+        reg signed [31:0] sp00;
+        reg signed [31:0] sp02;
+        reg signed [31:0] sp10;
+        reg signed [31:0] sp12;
+        reg signed [31:0] sp20;
+        reg signed [31:0] sp22;
+
+        reg signed [31:0] result;
+
+        begin
+
+            // -------------------------------------------------
+            // Read 3x3 neighborhood
+            // -------------------------------------------------
+
+            p00 = input_mem[(r    )*IMG_WIDTH + (c    )];
+            p01 = input_mem[(r    )*IMG_WIDTH + (c + 1)];
+            p02 = input_mem[(r    )*IMG_WIDTH + (c + 2)];
+
+            p10 = input_mem[(r + 1)*IMG_WIDTH + (c    )];
+            p12 = input_mem[(r + 1)*IMG_WIDTH + (c + 2)];
+
+            p20 = input_mem[(r + 2)*IMG_WIDTH + (c    )];
+            p21 = input_mem[(r + 2)*IMG_WIDTH + (c + 1)];
+            p22 = input_mem[(r + 2)*IMG_WIDTH + (c + 2)];
+
+            // -------------------------------------------------
+            // Explicit zero-extension:
+            //
+            // 8-bit unsigned pixel
+            //          ↓
+            // 32-bit signed positive value
+            // -------------------------------------------------
+
+            sp00 = {24'd0, p00};
+            sp02 = {24'd0, p02};
+
+            sp10 = {24'd0, p10};
+            sp12 = {24'd0, p12};
+
+            sp20 = {24'd0, p20};
+            sp22 = {24'd0, p22};
+
+            // -------------------------------------------------
+            // Sobel-X convolution
+            // -------------------------------------------------
+
+            result =
+                  -sp00
+                  + sp02
+                  - (32'sd2 * sp10)
+                  + (32'sd2 * sp12)
+                  - sp20
+                  + sp22;
+
+            // -------------------------------------------------
+            // Saturation
+            // -------------------------------------------------
+
+            if (result < 0)
+                sobel_x = 0;
+
+            else if (result > 255)
+                sobel_x = 255;
+
+            else
+                sobel_x = result[7:0];
+
+        end
+
+    endfunction
+
+    // =========================================================
+    // Testbench
+    // =========================================================
+
     initial begin
-        // Load Hex Files
-        $readmemh("input_pixels.hex", input_mem);
-        $readmemh("golden_output.hex", golden_mem);
 
-        s_axis_tvalid = 0;
-        s_axis_tdata  = 0;
-        m_axis_tready = 1;
+        clk = 1'b0;
+        rst = 1'b1;
 
-        @(posedge rst_n);
-        @(posedge clk);
+        s_axis_valid = 1'b0;
+        s_axis_data  = 8'd0;
 
-        $display("==================================================");
-        $display("STARTING FILE-DRIVEN GOLDEN MODEL VERIFICATION");
-        $display("==================================================");
+        input_count  = 0;
+        output_count = 0;
+        match_count  = 0;
+        mismatch_count = 0;
 
-        // Feed input stream from file memory
-        for (idx = 0; idx < TOTAL_PIXELS; idx = idx + 1) begin
-            s_axis_tvalid = 1'b1;
-            s_axis_tdata  = input_mem[idx];
+        // -----------------------------------------------------
+        // Generate deterministic test image
+        //
+        // Pixel value = lower 8 bits of linear pixel index.
+        // -----------------------------------------------------
 
-            @(posedge clk);
-            while (!s_axis_tready) begin
-                @(posedge clk);
+        for (i = 0; i < TOTAL_IN; i = i + 1) begin
+            input_mem[i] = i[7:0];
+        end
+
+        // -----------------------------------------------------
+        // Generate golden Sobel-X reference image
+        //
+        // Only valid 3x3 positions are produced.
+        // Therefore:
+        //
+        // 128x128 input
+        //       ↓
+        // 126x126 valid output
+        //       ↓
+        // 15876 output pixels
+        // -----------------------------------------------------
+
+        for (r = 0; r < IMG_HEIGHT - 2; r = r + 1) begin
+
+            for (c = 0; c < IMG_WIDTH - 2; c = c + 1) begin
+
+                golden_mem[
+                    r * (IMG_WIDTH - 2) + c
+                ] = sobel_x(r, c);
+
             end
 
-            accepted_inputs = accepted_inputs + 1;
-            s_axis_tvalid = 1'b0;
         end
 
-        s_axis_tvalid = 1'b0;
+        // -----------------------------------------------------
+        // Reset
+        // -----------------------------------------------------
 
-        // Dynamic Drain Loop
-        while (!frame_done && (accepted_outputs < TOTAL_PIXELS)) begin
+        #30;
+
+        rst = 1'b0;
+
+        #10;
+
+        $display("==============================================");
+        $display("STARTING 128x128 SOBEL-X GOLDEN MODEL TEST");
+        $display("==============================================");
+
+        $display("Input pixels  : %0d", TOTAL_IN);
+        $display("Output pixels : %0d", TOTAL_OUT);
+
+        // -----------------------------------------------------
+        // Stream complete image
+        // -----------------------------------------------------
+
+        for (i = 0; i < TOTAL_IN; i = i + 1) begin
+
             @(posedge clk);
+
+            s_axis_valid = 1'b1;
+            s_axis_data  = input_mem[i];
+
+            input_count = input_count + 1;
+
         end
+
+        // -----------------------------------------------------
+        // Stop input stream
+        // -----------------------------------------------------
 
         @(posedge clk);
 
-        $display("==================================================");
-        $display("GOLDEN MODEL VERIFICATION SUMMARY");
-        $display("  Input Accepted   : %0d / %0d", accepted_inputs, TOTAL_PIXELS);
-        $display("  Expected Outputs : %0d", TOTAL_PIXELS);
-        $display("  Output Accepted  : %0d", accepted_outputs);
-        $display("  Mismatches       : %0d", errors);
-        $display("--------------------------------------------------");
+        s_axis_valid = 1'b0;
+        s_axis_data  = 8'd0;
 
-        if (errors == 0 && 
-            accepted_inputs == TOTAL_PIXELS && 
-            accepted_outputs == TOTAL_PIXELS) begin
-            $display("  STATUS: BIT-EXACT GOLDEN MATCH PASS 🟢");
-        end else begin
-            $display("  STATUS: GOLDEN MODEL MATCH FAIL 🔴");
+        // -----------------------------------------------------
+        // Wait until every expected output arrives
+        // -----------------------------------------------------
+
+        wait (output_count == TOTAL_OUT);
+
+        // Allow final signal settling
+        #20;
+
+        // -----------------------------------------------------
+        // Final verification summary
+        // -----------------------------------------------------
+
+        $display("");
+        $display("==============================================");
+        $display("GOLDEN MODEL VERIFICATION SUMMARY");
+        $display("==============================================");
+
+        $display(
+            "Input pixels accepted : %0d",
+            input_count
+        );
+
+        $display(
+            "Expected outputs      : %0d",
+            TOTAL_OUT
+        );
+
+        $display(
+            "Outputs received      : %0d",
+            output_count
+        );
+
+        $display(
+            "Matched outputs       : %0d",
+            match_count
+        );
+
+        $display(
+            "Mismatches            : %0d",
+            mismatch_count
+        );
+
+        $display("----------------------------------------------");
+
+        if ((input_count == TOTAL_IN) &&
+            (output_count == TOTAL_OUT) &&
+            (match_count == TOTAL_OUT) &&
+            (mismatch_count == 0)) begin
+
+            $display("STATUS: PIXEL-ACCURATE PASS");
+
         end
-        $display("==================================================");
+        else begin
+
+            $display("STATUS: FAIL");
+
+        end
+
+        $display("==============================================");
 
         $finish;
+
     end
 
-    // Monitor Outputs and Compare with Python Golden Reference
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            accepted_outputs <= 0;
-            m_axis_tready    <= 1'b1;
-        end else begin
-            // 70% backpressure stall rate
-            m_axis_tready <= ($urandom_range(0, 9) < 7);
+    // =========================================================
+    // Output Checker
+    //
+    // The DUT produces valid output after its internal
+    // pipeline latency.
+    //
+    // Every valid output is compared against the corresponding
+    // golden-model pixel.
+    // =========================================================
 
-            if (m_axis_tvalid && m_axis_tready) begin
-                if (m_axis_tdata !== golden_mem[accepted_outputs]) begin
-                    $display("[MISMATCH] Pixel %0d | Expected: 0x%02h | Got: 0x%02h",
-                             accepted_outputs, golden_mem[accepted_outputs], m_axis_tdata);
-                    errors = errors + 1;
+    always @(posedge clk) begin
+
+        if (!rst && m_axis_valid) begin
+
+            if (output_count < TOTAL_OUT) begin
+
+                if (m_axis_data === golden_mem[output_count]) begin
+
+                    match_count = match_count + 1;
+
                 end
-                accepted_outputs <= accepted_outputs + 1;
+                else begin
+
+                    mismatch_count = mismatch_count + 1;
+
+                    $display(
+                        "[MISMATCH] Pixel %0d | Expected: 0x%02h | Got: 0x%02h",
+                        output_count,
+                        golden_mem[output_count],
+                        m_axis_data
+                    );
+
+                end
+
+                output_count = output_count + 1;
+
             end
+
         end
+
     end
 
 endmodule
+
